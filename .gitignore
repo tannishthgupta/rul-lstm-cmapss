@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.env/
+
+# Model files
+models/*.keras
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files (CMAPSS raw data)
+data/
