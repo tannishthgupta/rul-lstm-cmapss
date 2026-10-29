@@ -22,10 +22,16 @@ def load_test_rul(data_dir, dataset):
     return pd.read_csv(path, sep=r"\s+", header=None, names=["RUL"])["RUL"].values
 
 
-def add_rul(df):
-    """Add the RUL column: cycles left until this engine's last (failure) cycle."""
+def add_rul(df, rul_cap):
+    """Add the RUL column: cycles left until this engine's last (failure) cycle,
+    capped at rul_cap.
+
+    Early in its life an engine shows no measurable wear, so the sensors can't
+    tell RUL=300 from RUL=150. Capping makes the target flat (=rul_cap) while
+    the engine is healthy and linear as it degrades: a piecewise-linear target.
+    """
     max_cycle = df.groupby("unit_id")["cycle"].transform("max")
-    df["RUL"] = max_cycle - df["cycle"]
+    df["RUL"] = (max_cycle - df["cycle"]).clip(upper=rul_cap)
     return df
 
 
@@ -44,7 +50,9 @@ def select_features(train_df):
 def make_windows(df, features, window_size):
     """Sliding windows inside each engine.
 
-    Window x[i-window_size:i] is paired with the RUL at row i (same as v1).
+    Each window ends at row `end` (inclusive) and is labelled with the RUL at
+    that same row, which matches how the test set is scored: the last window
+    of a test engine against the RUL at its last cycle.
     """
     x_all = []
     y_all = []
@@ -53,9 +61,9 @@ def make_windows(df, features, window_size):
         x_engine = engine[features].values
         y_engine = engine["RUL"].values
 
-        for i in range(window_size, len(engine)):
-            x_all.append(x_engine[i - window_size:i])
-            y_all.append(y_engine[i])
+        for end in range(window_size - 1, len(engine)):
+            x_all.append(x_engine[end - window_size + 1:end + 1])
+            y_all.append(y_engine[end])
 
     return np.array(x_all), np.array(y_all)
 

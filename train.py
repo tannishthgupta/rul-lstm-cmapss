@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--window-size", type=int, default=None,
                         help="default: 30 for FD001/FD003, 20 for FD002/FD004")
+    parser.add_argument("--rul-cap", type=int, default=125,
+                        help="cap on the training RUL target")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--data-dir", default="data")
@@ -47,7 +49,8 @@ def main():
     set_seeds(args.seed)
 
     # --- Training data ---
-    train_df = data.add_rul(data.load_split(args.data_dir, args.dataset, "train"))
+    train_df = data.load_split(args.data_dir, args.dataset, "train")
+    train_df = data.add_rul(train_df, args.rul_cap)
     features = data.select_features(train_df)
     print(f"Features ({len(features)}): {features}")
 
@@ -88,6 +91,7 @@ def main():
     # --- Test set ---
     test_df = data.load_split(args.data_dir, args.dataset, "test")
     test_df[features] = scaler.transform(test_df[features])
+    # The true test RUL is NOT capped: we score against what really happened.
     true_rul = data.load_test_rul(args.data_dir, args.dataset)
 
     x_test, unit_ids = data.last_windows(test_df, features, window_size)
