@@ -4,6 +4,7 @@ Usage:
     python train.py --dataset FD001 --seed 42
 """
 import argparse
+import json
 import os
 import random
 
@@ -30,6 +31,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--models-dir", default="models")
+    parser.add_argument("--results-dir", default="results")
     return parser.parse_args()
 
 
@@ -88,7 +90,7 @@ def main():
     early_stop = keras.callbacks.EarlyStopping(
         monitor="val_loss", patience=5, restore_best_weights=True
     )
-    model.fit(
+    history = model.fit(
         x_train, y_train,
         validation_data=(x_val, y_val),
         epochs=args.epochs,
@@ -108,16 +110,59 @@ def main():
     # The true test RUL is NOT capped: we score against what really happened.
     true_rul = data.load_test_rul(args.data_dir, args.dataset)
 
-    x_test, unit_ids = data.last_windows(test_df, features, window_size)
-    num_skipped = len(true_rul) - len(unit_ids)
-    if num_skipped > 0:
-        print(f"WARNING: skipped {num_skipped} test engines shorter than {window_size} cycles")
+    x_test, unit_ids, num_padded = data.last_windows(test_df, features, window_size)
+    if num_padded > 0:
+        print(f"Padded {num_padded} test engines shorter than {window_size} cycles")
+    # Every test engine must be scored, in the same order as RUL_FD00X.txt.
+    assert len(unit_ids) == len(true_rul), "number of test engines != number of RUL values"
+    assert (unit_ids == np.arange(1, len(true_rul) + 1)).all(), "test unit_ids out of order"
 
     y_pred = model.predict(x_test, verbose=0).flatten()
-    y_true = true_rul[unit_ids - 1]  # unit_id 1 is row 0 of RUL_FD00X.txt
+    y_true = true_rul
 
-    print(f"Test MAE:  {evaluate.mae(y_true, y_pred):.2f}")
-    print(f"Test RMSE: {evaluate.rmse(y_true, y_pred):.2f}")
+    test_mae = evaluate.mae(y_true, y_pred)
+    test_rmse = evaluate.rmse(y_true, y_pred)
+    test_score = evaluate.nasa_score(y_true, y_pred)
+    num_late = int(np.sum(y_pred > y_true))
+    print(f"Test engines: {len(y_true)}  (late predictions: {num_late})")
+    print(f"Test MAE:        {test_mae:.2f}")
+    print(f"Test RMSE:       {test_rmse:.2f}")
+    print(f"Test NASA score: {test_score:.1f}")
+
+    # --- Save results ---
+    val_loss = history.history["val_loss"]
+    results = {
+        "dataset": args.dataset,
+        "seed": args.seed,
+        "args": vars(args),
+        "window_size": window_size,
+        "regimes": regimes,
+        "dropped_sensors": dropped,
+        "features": features,
+        "val_engine_ids": val_ids.tolist(),
+        "epochs_run": len(val_loss),
+        "best_epoch": int(np.argmin(val_loss)) + 1,
+        "best_val_rmse": float(np.sqrt(min(val_loss))),
+        "test": {
+            "num_engines": len(y_true),
+            "num_padded": num_padded,
+            "num_late": num_late,
+            "mae": test_mae,
+            "rmse": test_rmse,
+            "nasa_score": test_score,
+        },
+        # Kept for later error analysis (Phase 2).
+        "per_engine": {
+            "unit_id": unit_ids.tolist(),
+            "true_rul": y_true.tolist(),
+            "pred_rul": [round(float(p), 2) for p in y_pred],
+        },
+    }
+    os.makedirs(args.results_dir, exist_ok=True)
+    results_path = os.path.join(args.results_dir, f"{args.dataset}_seed{args.seed}.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved results to {results_path}")
 
 
 if __name__ == "__main__":

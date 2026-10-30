@@ -125,17 +125,22 @@ def make_windows(df, features, window_size):
 
 
 def last_windows(df, features, window_size):
-    """The last window_size cycles of each test engine.
+    """The last window_size cycles of each test engine (one window per engine).
 
-    Engines shorter than window_size are skipped (same as v1); the returned
-    unit_ids say which engines were kept.
+    An engine with fewer than window_size cycles is padded at the start by
+    repeating its first cycle, so every test engine gets a prediction.
+    Returns the windows, the unit_ids, and how many engines were padded.
     """
     x_test = []
     unit_ids = []
+    num_padded = 0
     for unit_id in df["unit_id"].unique():
-        engine = df[df["unit_id"] == unit_id]
-        if len(engine) >= window_size:
-            x_test.append(engine[features].values[-window_size:])
-            unit_ids.append(unit_id)
+        engine = df[df["unit_id"] == unit_id][features].values
+        if len(engine) < window_size:
+            padding = np.repeat(engine[:1], window_size - len(engine), axis=0)
+            engine = np.concatenate([padding, engine])
+            num_padded += 1
+        x_test.append(engine[-window_size:])
+        unit_ids.append(unit_id)
 
-    return np.array(x_test), np.array(unit_ids)
+    return np.array(x_test), np.array(unit_ids), num_padded
