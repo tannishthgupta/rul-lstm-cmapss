@@ -3,8 +3,11 @@ import os
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
 
 OP_SETTINGS = [f"op_setting_{i}" for i in range(1, 4)]
+# Decimals that separate the 6 C-MAPSS flight conditions (altitude, Mach, throttle).
+REGIME_ROUNDING = {"op_setting_1": 0, "op_setting_2": 2, "op_setting_3": 0}
 SENSORS = [f"sensor_{i}" for i in range(1, 22)]
 COLUMNS = ["unit_id", "cycle"] + OP_SETTINGS + SENSORS
 
@@ -52,16 +55,52 @@ def split_engines(df, val_fraction, seed):
     return df[~is_val].copy(), df[is_val].copy(), val_ids
 
 
-def select_features(train_df):
-    """v1 feature selection: drop near-constant sensors, keep sensors with
-    |correlation with RUL| > 0.2, then add the 3 operating settings."""
-    sensor_std = train_df[SENSORS].std()
-    useful_sensors = sensor_std[sensor_std > 0.01].index.tolist()
+def add_regime(df):
+    """Label each row with its operating regime (flight condition).
 
-    corr_with_rul = train_df[useful_sensors + ["RUL"]].corr()["RUL"].drop("RUL")
-    selected_sensors = corr_with_rul[corr_with_rul.abs() > 0.2].index.tolist()
+    The settings are noisy measurements of a few fixed flight conditions, so
+    rounding them gives the condition back: 1 regime in FD001/FD003, 6 in
+    FD002/FD004. The label is a string such as "42.0_0.84_100.0".
+    """
+    # "+ 0.0" turns -0.0 into 0.0, otherwise they'd count as different regimes.
+    rounded = df[OP_SETTINGS].round(REGIME_ROUNDING) + 0.0
+    df["regime"] = rounded.astype(str).agg("_".join, axis=1)
+    return df
 
-    return selected_sensors + OP_SETTINGS
+
+def find_constant_sensors(train_df):
+    """Sensors that never change within any regime, so they carry no wear signal.
+
+    This is checked per regime: in FD002/FD004 some sensors change only when the
+    flight condition changes, and are flat inside each condition.
+    """
+    std_per_regime = train_df.groupby("regime")[SENSORS].std()
+    max_std = std_per_regime.max()
+    return max_std[max_std < 1e-8].index.tolist()
+
+
+def fit_regime_scalers(train_df, features):
+    """Fit one StandardScaler per regime, on training rows only."""
+    scalers = {}
+    for regime, rows in train_df.groupby("regime"):
+        scalers[regime] = StandardScaler().fit(rows[features])
+    return scalers
+
+
+def apply_regime_scalers(df, features, scalers):
+    """Scale each row with the scaler of its own regime.
+
+    After this, a value of +2 means "2 standard deviations above normal for this
+    flight condition", so readings from different conditions are comparable.
+    """
+    df = df.copy()
+    # Some sensors (e.g. sensor_17) are stored as integers; scaled values aren't.
+    df[features] = df[features].astype(float)
+    for regime, rows in df.groupby("regime"):
+        if regime not in scalers:
+            raise ValueError(f"Regime {regime} was not seen in the training engines")
+        df.loc[rows.index, features] = scalers[regime].transform(rows[features])
+    return df
 
 
 def make_windows(df, features, window_size):

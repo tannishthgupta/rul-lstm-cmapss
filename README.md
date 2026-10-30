@@ -55,14 +55,19 @@ Tested with Python 3.10 on Windows (CPU only). With the same seed, runs give ide
    wear, so the target is flat at 125, then decreases linearly to 0 at failure.
 2. **Train/validation split by engine:** 20% of the training *engines* (chosen with the
    seed) are held out for validation. Every row of an engine goes to one side only.
-3. **Features (from v1, will change):** drop sensors with std ≤ 0.01, keep sensors with
-   |correlation with RUL| > 0.2, add the 3 operating settings. One MinMax scaler. Both are
-   fit on the training engines only and then applied to validation and test.
-4. **Windows:** sliding windows built separately inside each engine on each side of the
+3. **Operating regimes:** each row's flight condition is found by rounding the 3 operating
+   settings. This gives 1 regime in FD001/FD003 and 6 in FD002/FD004.
+4. **Features:** all 21 sensors, minus those that are constant within every regime in the
+   training engines (the dropped sensors are printed in the log). The operating settings
+   are not used as inputs.
+5. **Per-regime normalization:** one StandardScaler per regime, fit on the training engines
+   only and then applied to validation and test. A value of +2 means "2 standard
+   deviations above normal for this flight condition".
+6. **Windows:** sliding windows built separately inside each engine on each side of the
    split. Each window is labelled with the RUL at its last cycle.
-5. **Model:** LSTM(64) → Dropout(0.2) → LSTM(32) → Dense(32, ReLU) → Dense(1). MSE loss,
+7. **Model:** LSTM(64) → Dropout(0.2) → LSTM(32) → Dense(32, ReLU) → Dense(1). MSE loss,
    Adam (lr 1e-3), batch size 64.
-6. **Test:** predict on the last window of each test engine and compare with
+8. **Test:** predict on the last window of each test engine and compare with
    `RUL_FD00X.txt` (true test RUL is *not* capped).
 
 ---
@@ -76,6 +81,7 @@ All runs: seed 42, one run per subset. Test metrics are on the official test set
 | 1. Refactor of v1 into `train.py` (same behaviour as v1) | 27.49 | 56.63 | 33.13 | 66.47 |
 | 2. Cap RUL at 125 + fix off-by-one window label | 14.05 | 53.80 | 14.22 | 54.58 |
 | 3. Split train/val by engine (no window leakage) | 15.05 | 53.80 | 18.53 | 54.65 |
+| 4. Per-regime normalization; drop constant sensors | 14.90 | 27.53 | 14.66 | 27.28 |
 
 What each change did:
 
@@ -91,16 +97,22 @@ What each change did:
    (14.22 → 18.53), where early stopping now stopped at epoch 12 instead of 47. The test
    set itself never leaked; what changed is that early stopping now picks the epoch using
    an honest validation score. With one seed, part of this difference may be noise.
+4. **Per-regime normalization:** in FD002/FD004 a sensor reading jumps when the flight
+   condition changes, which hides the slow wear trend. In v1 no sensor correlated with
+   RUL, so the correlation filter removed all of them and the model only saw the 3
+   operating settings. Scaling each regime separately makes the wear trend visible again:
+   in FD002's training engines, the number of sensors with |correlation with RUL| > 0.2
+   went from 0 to 16. FD002 and FD004 RMSE roughly halved (53.80 → 27.53 and
+   54.65 → 27.28). The correlation filter was removed; only sensors that are constant
+   within every regime are dropped.
 
 ---
 
 ## Known limitations (current state)
 
-- **FD002/FD004 use no sensors.** In these subsets the sensor values jump with the
-  operating regime, so no sensor passes the correlation filter, and the model sees only
-  the 3 operating settings. Per-regime normalization should fix this. *(Next fix.)*
-- **Early stopping patience is 5 epochs**, which with an honest (noisier) validation
-  score can stop training early, as on FD003. Not tuned yet.
+- **Training stops very early.** Early stopping uses a patience of 5 epochs, and in the
+  sub-step 4 runs it ended training after 7–11 epochs, so the best epoch was epoch 2–6.
+  The model may be undertrained. Not tuned yet.
 - **FD004 skips 2 of 248 test engines** that are shorter than the 20-cycle window.
   *(Planned.)*
 - **No NASA asymmetric score yet**, only MAE/RMSE. *(Planned.)*
@@ -113,7 +125,7 @@ What each change did:
 ## Project structure
 
 ```
-data.py       loading, RUL labels, feature selection, windowing
+data.py       loading, RUL labels, engine split, regimes, per-regime scaling, windowing
 model.py      the LSTM model
 evaluate.py   metrics
 train.py      entry point: python train.py --dataset FD00X

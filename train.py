@@ -8,7 +8,6 @@ import os
 import random
 
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
 
 import data
 import evaluate
@@ -52,6 +51,7 @@ def main():
     # --- Training data ---
     full_df = data.load_split(args.data_dir, args.dataset, "train")
     full_df = data.add_rul(full_df, args.rul_cap)
+    full_df = data.add_regime(full_df)
 
     # Split by engine FIRST, then build windows inside each side.
     train_df, val_df, val_ids = data.split_engines(full_df, args.val_fraction, args.seed)
@@ -59,14 +59,19 @@ def main():
     print(f"Engines: {num_train_engines} train, {len(val_ids)} val")
     print(f"Val engine ids: {val_ids.tolist()}")
 
-    # Anything "learned" from data (feature choice, scaler min/max) comes from
-    # the training engines only; validation is treated like unseen test data.
-    features = data.select_features(train_df)
+    # Anything "learned" from data (which sensors to drop, scaler mean/std)
+    # comes from the training engines only; validation is treated like test data.
+    regimes = sorted(train_df["regime"].unique())
+    print(f"Regimes ({len(regimes)}): {regimes}")
+
+    dropped = data.find_constant_sensors(train_df)
+    features = [s for s in data.SENSORS if s not in dropped]
+    print(f"Dropped constant sensors ({len(dropped)}): {dropped}")
     print(f"Features ({len(features)}): {features}")
 
-    scaler = MinMaxScaler()
-    train_df[features] = scaler.fit_transform(train_df[features])
-    val_df[features] = scaler.transform(val_df[features])
+    scalers = data.fit_regime_scalers(train_df, features)
+    train_df = data.apply_regime_scalers(train_df, features, scalers)
+    val_df = data.apply_regime_scalers(val_df, features, scalers)
 
     x_train, y_train = data.make_windows(train_df, features, window_size)
     x_val, y_val = data.make_windows(val_df, features, window_size)
@@ -98,8 +103,8 @@ def main():
     print(f"Saved model to {model_path}")
 
     # --- Test set ---
-    test_df = data.load_split(args.data_dir, args.dataset, "test")
-    test_df[features] = scaler.transform(test_df[features])
+    test_df = data.add_regime(data.load_split(args.data_dir, args.dataset, "test"))
+    test_df = data.apply_regime_scalers(test_df, features, scalers)
     # The true test RUL is NOT capped: we score against what really happened.
     true_rul = data.load_test_rul(args.data_dir, args.dataset)
 
