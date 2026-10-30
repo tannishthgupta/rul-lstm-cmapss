@@ -8,7 +8,6 @@ import os
 import random
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
 import data
@@ -26,6 +25,8 @@ def parse_args():
                         help="default: 30 for FD001/FD003, 20 for FD002/FD004")
     parser.add_argument("--rul-cap", type=int, default=125,
                         help="cap on the training RUL target")
+    parser.add_argument("--val-fraction", type=float, default=0.2,
+                        help="fraction of training ENGINES held out for validation")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--data-dir", default="data")
@@ -49,18 +50,26 @@ def main():
     set_seeds(args.seed)
 
     # --- Training data ---
-    train_df = data.load_split(args.data_dir, args.dataset, "train")
-    train_df = data.add_rul(train_df, args.rul_cap)
+    full_df = data.load_split(args.data_dir, args.dataset, "train")
+    full_df = data.add_rul(full_df, args.rul_cap)
+
+    # Split by engine FIRST, then build windows inside each side.
+    train_df, val_df, val_ids = data.split_engines(full_df, args.val_fraction, args.seed)
+    num_train_engines = train_df["unit_id"].nunique()
+    print(f"Engines: {num_train_engines} train, {len(val_ids)} val")
+    print(f"Val engine ids: {val_ids.tolist()}")
+
+    # Anything "learned" from data (feature choice, scaler min/max) comes from
+    # the training engines only; validation is treated like unseen test data.
     features = data.select_features(train_df)
     print(f"Features ({len(features)}): {features}")
 
     scaler = MinMaxScaler()
     train_df[features] = scaler.fit_transform(train_df[features])
+    val_df[features] = scaler.transform(val_df[features])
 
-    x_all, y_all = data.make_windows(train_df, features, window_size)
-    x_train, x_val, y_train, y_val = train_test_split(
-        x_all, y_all, test_size=0.2, random_state=args.seed
-    )
+    x_train, y_train = data.make_windows(train_df, features, window_size)
+    x_val, y_val = data.make_windows(val_df, features, window_size)
     print(f"Train windows: {x_train.shape}, val windows: {x_val.shape}")
 
     # --- Model ---

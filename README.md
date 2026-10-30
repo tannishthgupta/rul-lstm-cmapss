@@ -53,14 +53,16 @@ Tested with Python 3.10 on Windows (CPU only). With the same seed, runs give ide
 
 1. **RUL label:** `RUL = min(last_cycle − cycle, 125)`. Early in life the sensors show no
    wear, so the target is flat at 125, then decreases linearly to 0 at failure.
-2. **Features (from v1, will change):** drop sensors with std ≤ 0.01, keep sensors with
-   |correlation with RUL| > 0.2, add the 3 operating settings. One MinMax scaler is fit on
-   the whole training set.
-3. **Windows:** sliding windows inside each engine. Each window is labelled with the RUL at
-   its last cycle.
-4. **Model:** LSTM(64) → Dropout(0.2) → LSTM(32) → Dense(32, ReLU) → Dense(1). MSE loss,
+2. **Train/validation split by engine:** 20% of the training *engines* (chosen with the
+   seed) are held out for validation. Every row of an engine goes to one side only.
+3. **Features (from v1, will change):** drop sensors with std ≤ 0.01, keep sensors with
+   |correlation with RUL| > 0.2, add the 3 operating settings. One MinMax scaler. Both are
+   fit on the training engines only and then applied to validation and test.
+4. **Windows:** sliding windows built separately inside each engine on each side of the
+   split. Each window is labelled with the RUL at its last cycle.
+5. **Model:** LSTM(64) → Dropout(0.2) → LSTM(32) → Dense(32, ReLU) → Dense(1). MSE loss,
    Adam (lr 1e-3), batch size 64.
-5. **Test:** predict on the last window of each test engine and compare with
+6. **Test:** predict on the last window of each test engine and compare with
    `RUL_FD00X.txt` (true test RUL is *not* capped).
 
 ---
@@ -73,6 +75,7 @@ All runs: seed 42, one run per subset. Test metrics are on the official test set
 |--------|-----------:|-----------:|-----------:|-----------:|
 | 1. Refactor of v1 into `train.py` (same behaviour as v1) | 27.49 | 56.63 | 33.13 | 66.47 |
 | 2. Cap RUL at 125 + fix off-by-one window label | 14.05 | 53.80 | 14.22 | 54.58 |
+| 3. Split train/val by engine (no window leakage) | 15.05 | 53.80 | 18.53 | 54.65 |
 
 What each change did:
 
@@ -81,17 +84,23 @@ What each change did:
 2. **RUL cap:** FD001 and FD003 RMSE roughly halved, because the model no longer has to
    guess a large uncapped RUL for healthy engines whose sensors all look the same.
    FD002/FD004 barely improved (see limitations).
+3. **Split by engine:** before, windows were shuffled into train/val randomly, so
+   near-identical overlapping windows from one engine sat on both sides and the
+   validation score was too optimistic. Now validation engines are never seen in training.
+   Test RMSE got slightly worse on FD001 (14.05 → 15.05) and clearly worse on FD003
+   (14.22 → 18.53), where early stopping now stopped at epoch 12 instead of 47. The test
+   set itself never leaked; what changed is that early stopping now picks the epoch using
+   an honest validation score. With one seed, part of this difference may be noise.
 
 ---
 
 ## Known limitations (current state)
 
-- **Leaky validation split.** Train and validation are split randomly over windows, so
-  overlapping windows from the same engine land in both. Early stopping is therefore
-  chosen on leaked data. *(Next fix.)*
 - **FD002/FD004 use no sensors.** In these subsets the sensor values jump with the
   operating regime, so no sensor passes the correlation filter, and the model sees only
-  the 3 operating settings. Per-regime normalization should fix this. *(Planned.)*
+  the 3 operating settings. Per-regime normalization should fix this. *(Next fix.)*
+- **Early stopping patience is 5 epochs**, which with an honest (noisier) validation
+  score can stop training early, as on FD003. Not tuned yet.
 - **FD004 skips 2 of 248 test engines** that are shorter than the 20-cycle window.
   *(Planned.)*
 - **No NASA asymmetric score yet**, only MAE/RMSE. *(Planned.)*

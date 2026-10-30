@@ -35,6 +35,23 @@ def add_rul(df, rul_cap):
     return df
 
 
+def split_engines(df, val_fraction, seed):
+    """Split a training DataFrame into train and validation by engine (unit_id).
+
+    Every row of an engine goes to the same side, so overlapping windows from
+    one engine can never end up in both train and validation.
+    """
+    unit_ids = df["unit_id"].unique()
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(unit_ids)
+
+    num_val = round(len(unit_ids) * val_fraction)
+    val_ids = np.sort(shuffled[:num_val])
+
+    is_val = df["unit_id"].isin(val_ids)
+    return df[~is_val].copy(), df[is_val].copy(), val_ids
+
+
 def select_features(train_df):
     """v1 feature selection: drop near-constant sensors, keep sensors with
     |correlation with RUL| > 0.2, then add the 3 operating settings."""
